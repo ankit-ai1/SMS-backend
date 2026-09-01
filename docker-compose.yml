@@ -1,0 +1,62 @@
+# Local run: Postgres + backend, one command.
+#   docker compose up --build
+# Then (first time) create the registry schema, one db_instance, and a tenant DB.
+# See RUN_LOCAL.md for the exact seed commands.
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: school_mgmt_app
+      POSTGRES_PASSWORD: localpass
+      POSTGRES_DB: tenant_registry
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./src/sql/registry_schema.sql:/docker-entrypoint-initdb.d/registry_schema.sql:ro
+      - ./docker/initdb/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./migrations/001_schema_v1.sql:/docker-entrypoint-initdb.d/001_schema_v1.sql:ro
+      - ./migrations/002_auth_tokens.sql:/docker-entrypoint-initdb.d/002_auth_tokens.sql:ro
+      - ./migrations/004_calendar_events.sql:/docker-entrypoint-initdb.d/004_calendar_events.sql:ro
+      - ./migrations/005_document_files.sql:/docker-entrypoint-initdb.d/005_document_files.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U school_mgmt_app -d tenant_registry"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    env_file: .env
+    volumes:
+      - docdata:/app/var/documents
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      BASE_DOMAIN: "lvh.me"           # lvh.me + subdomains resolve to 127.0.0.1
+      # registry DB
+      REGISTRY_DB_HOST: db
+      REGISTRY_DB_PORT: "5432"
+      REGISTRY_DB_NAME: tenant_registry
+      REGISTRY_DB_USER: school_mgmt_app
+      REGISTRY_DB_PASSWORD: localpass
+      # tenant DBs live on the same local Postgres (proxy_port = 5432 in the
+      # db_instances row you seed). In prod this is the Cloud SQL Proxy sidecar.
+      TENANT_DB_HOST: db
+      TENANT_DB_USER: school_mgmt_app
+      TENANT_DB_PASSWORD: localpass
+      # uploaded student documents (local driver; swap for a GCS bucket later)
+      DOCUMENTS_DIR: /app/var/documents
+      # JWT (dev keys injected via .env — never commit real keys)
+      JWT_ACTIVE_KID: "k1"
+      JWT_ISSUER: "lvh.me"
+      JWT_ACCESS_TTL: "3600"
+
+volumes:
+  pgdata:
+  docdata:

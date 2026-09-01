@@ -1,0 +1,12 @@
+# local secrets — never commit
+.env
+
+# generated dev keypair
+dev_priv.pem
+dev_pub.pem
+
+node_modules/
+dist/
+
+# uploaded documents (local storage driver)
+var/
