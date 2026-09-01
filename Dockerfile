@@ -10,12 +10,26 @@ RUN npm run build            # -> dist/
 FROM node:20-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && npm cache clean --force
+
 COPY --from=build /app/dist ./dist
 COPY migrations ./migrations
 COPY src/sql ./src/sql
+
+# Uploads only land here when STORAGE_DRIVER=local; on Cloud Run they go to GCS
+# and this stays empty. Created up front so the non-root user can write to it.
+RUN mkdir -p /app/var/documents && chown -R node:node /app/var
+
+# Never run the API as root.
+USER node
+
+# Documentation only — Cloud Run injects PORT and the server reads it. Do not
+# hardcode a port anywhere; the server binds 0.0.0.0:$PORT (default 8080).
 EXPOSE 8080
-# Cloud SQL Proxy runs as a sidecar (GKE) or as the Cloud Run built-in
-# connector; the app talks to it on 127.0.0.1 (see TENANT_DB_HOST).
+
+# Cloud SQL is reached over the unix socket Cloud Run mounts at
+# /cloudsql/<connection-name>; there is no Cloud SQL Proxy sidecar to run.
+# Migrations are a separate entrypoint: `node dist/scripts/migrate.js`.
 CMD ["node", "dist/server.js"]

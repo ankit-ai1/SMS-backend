@@ -1,5 +1,5 @@
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
-import { config } from '../config';
+import { config, pgPort } from '../config';
 import { TenantContext } from '../registry/types';
 
 interface PoolEntry {
@@ -45,7 +45,7 @@ export class TenantPoolManager {
 
     const pool = new Pool({
       host: config.tenantDb.host, // 127.0.0.1 (Cloud SQL Proxy sidecar)
-      port: ctx.instance.proxyPort, // per-instance local port
+      port: pgPort(config.tenantDb.host, ctx.instance.proxyPort), // socket-aware
       database: ctx.tenant.dbName,
       user: config.tenantDb.user,
       password: config.tenantDb.password,

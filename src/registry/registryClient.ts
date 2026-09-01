@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { config } from '../config';
+import { config, pgPort } from '../config';
 import { DbInstance, Tenant, TenantContext, TenantStatus } from './types';
 
 /**
@@ -12,7 +12,7 @@ export class RegistryClient {
   constructor() {
     this.pool = new Pool({
       host: config.registry.host,
-      port: config.registry.port,
+      port: pgPort(config.registry.host, config.registry.port),
       database: config.registry.database,
       user: config.registry.user,
       password: config.registry.password,

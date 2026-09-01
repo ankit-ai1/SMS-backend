@@ -73,6 +73,35 @@ export const config = {
    * this, so pointing the app at a GCS bucket later needs no data change.
    */
   documentsDir: str('DOCUMENTS_DIR', './var/documents'),
+
+  /** 'local' (disk, dev) or 'gcs' (bucket, Cloud Run — uses the runtime SA). */
+  storageDriver: str('STORAGE_DRIVER', 'local'),
+  gcsBucket: str('GCS_BUCKET', ''),
+
+  /**
+   * Browser origins allowed to call this API. Comma-separated; "*" allows any.
+   * The frontend runs on its own origin, so this must name it in production.
+   */
+  corsOrigins: str('CORS_ORIGINS', '*')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean),
 };
 
 export type AppConfig = typeof config;
+
+/**
+ * Cloud SQL on Cloud Run is reached through a unix socket mounted at
+ * /cloudsql/<project>:<region>:<instance>, not a host:port. node-postgres treats
+ * a host starting with "/" as a socket directory and appends `.s.PGSQL.<port>`,
+ * and Cloud SQL only ever creates `.s.PGSQL.5432` — so the per-instance proxy
+ * port from the registry does not apply there.
+ */
+export function isUnixSocket(host: string): boolean {
+  return host.startsWith('/');
+}
+
+/** The port to dial: the configured one over TCP, always 5432 over a socket. */
+export function pgPort(host: string, port: number): number {
+  return isUnixSocket(host) ? 5432 : port;
+}

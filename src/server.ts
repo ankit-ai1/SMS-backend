@@ -41,7 +41,8 @@ async function main(): Promise<void> {
   }
   const app = createTenantApp({ cache, pools, keys, baseDomain });
 
-  const server = app.listen(port, () => {
+  // Cloud Run routes to the container IP, so bind all interfaces, not loopback.
+  const server = app.listen(port, '0.0.0.0', () => {
     // eslint-disable-next-line no-console
     console.log(`[server] listening on :${port} (base domain ${baseDomain})`);
   });

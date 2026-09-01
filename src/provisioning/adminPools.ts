@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { config } from '../config';
+import { config, pgPort } from '../config';
 import { DbInstance } from '../registry/types';
 
 /**
@@ -18,7 +18,7 @@ export class AdminPools {
     if (existing) return existing;
     const pool = new Pool({
       host: config.tenantDb.host,
-      port: instance.proxyPort,
+      port: pgPort(config.tenantDb.host, instance.proxyPort),
       database: 'tenant_registry', // maintenance DB
       user: config.tenantDb.user,
       password: config.tenantDb.password,
@@ -36,7 +36,7 @@ export class AdminPools {
   poolForDatabase(instance: DbInstance, dbName: string): Pool {
     return new Pool({
       host: config.tenantDb.host,
-      port: instance.proxyPort,
+      port: pgPort(config.tenantDb.host, instance.proxyPort),
       database: dbName,
       user: config.tenantDb.user,
       password: config.tenantDb.password,

@@ -68,10 +68,24 @@ export class LocalDiskStorage implements DocumentStorage {
   }
 }
 
-let active: DocumentStorage = new LocalDiskStorage();
+let active: DocumentStorage | undefined;
 
-/** The store the document endpoints use. */
+/**
+ * The store the document endpoints use, built from STORAGE_DRIVER on first use.
+ * The GCS driver is required lazily so local runs never load the SDK.
+ */
 export function documentStorage(): DocumentStorage {
+  if (!active) {
+    if (config.storageDriver === 'gcs') {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { GcsStorage } = require('./gcsStorage') as typeof import('./gcsStorage');
+      active = new GcsStorage();
+      console.log(`[storage] gcs bucket=${config.gcsBucket}`);
+    } else {
+      active = new LocalDiskStorage();
+      console.log(`[storage] local dir=${config.documentsDir}`);
+    }
+  }
   return active;
 }
 

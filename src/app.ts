@@ -6,6 +6,7 @@ import { AuthService } from './auth/authService';
 import { authRouter } from './auth/routes';
 import { authMiddleware } from './auth/authMiddleware';
 import { tenantResolverMiddleware } from './middleware/tenantResolver';
+import { config } from './config';
 import { errorMiddleware, notFoundMiddleware } from './http/context';
 import { corePeopleRouter, corePeopleInternalRouter } from './services/corePeople';
 import { academicOpsRouter, academicOpsInternalRouter } from './services/academicOps';
@@ -28,17 +29,59 @@ export interface TenantAppDeps {
  * Wiring order (base doc §8.1):
  *   health → tenantResolver → [auth routes] → JWT → [service routes] → errors
  */
+/**
+ * Match a browser Origin against CORS_ORIGINS. Entries are exact origins, "*"
+ * for any, or a wildcard host suffix like "*.vercel.app" — preview deployments
+ * get a fresh hostname every push, so an exact list cannot keep up with them.
+ */
+export function originAllowed(origin: string, allowed: string[]): boolean {
+  return allowed.some((entry) => {
+    if (entry === '*' || entry === origin) return true;
+    if (!entry.startsWith('*.')) return false;
+    try {
+      return new URL(origin).hostname.endsWith(entry.slice(1));
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function createTenantApp(deps: TenantAppDeps): Express {
   const { cache, pools, keys, baseDomain } = deps;
   const app = express();
   app.use(express.json({ limit: '2mb' }));
+
+  // The browser app is served from a different origin than the API (a Cloud Run
+  // URL), and it sends Authorization + X-Tenant-Subdomain — both of which make
+  // every request preflighted. Without this the browser blocks them all.
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && originAllowed(origin, config.corsOrigins)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Authorization, Content-Type, X-Tenant-Subdomain',
+    );
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Tenant-ID');
+    res.setHeader('Access-Control-Max-Age', '3600');
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
 
   // Liveness — no tenant needed.
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', pools: pools.activePoolCount, cache_tenants: cache.size });
   });
 
-  // Every request below is scoped to a tenant resolved from the Host header.
+  // Every request below is scoped to a tenant, resolved from the
+  // X-Tenant-Subdomain header or, failing that, the Host header.
   app.use(tenantResolverMiddleware(cache, baseDomain));
 
   const authService = new AuthService(pools, keys);

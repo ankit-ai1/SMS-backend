@@ -35,23 +35,39 @@ export function subdomainFromHost(
   return parts[parts.length - 1] || null;
 }
 
+/** The header a client sends when the hostname cannot carry the tenant. */
+export const TENANT_HEADER = 'x-tenant-subdomain';
+
 /**
- * Resolve a Host header to a TenantContext using the cache. Pure function so it
- * can be unit-tested and reused outside Express.
+ * Resolve a request to a TenantContext using the cache. Pure function so it can
+ * be unit-tested and reused outside Express.
+ *
+ * Two ways in, in this order:
+ *   1. an explicit X-Tenant-Subdomain header — behind Cloud Run (or any single
+ *      hostname) this is the only signal, since the run.app URL has no tenant
+ *      label in it;
+ *   2. the Host header — sunrise.schoolmgmt.com -> "sunrise".
+ *
+ * The header only *selects* a tenant; it grants nothing. Every authenticated
+ * route still checks the JWT's tenant_id against the resolved tenant and
+ * answers TENANT_MISMATCH when they differ, so naming another tenant here gets
+ * a caller no further than a 403.
  */
 export function resolveTenant(
   cache: RegistryCache,
   host: string | undefined,
   baseDomain: string,
+  headerSubdomain?: string,
 ): TenantContext {
-  if (!host) {
+  const explicit = headerSubdomain?.trim().toLowerCase();
+  if (!explicit && !host) {
     throw new TenantResolutionError('NO_HOST', 'Missing Host header');
   }
-  const subdomain = subdomainFromHost(host, baseDomain);
+  const subdomain = explicit || subdomainFromHost(host, baseDomain);
   if (!subdomain) {
     throw new TenantResolutionError(
       'BAD_HOST',
-      `Host has no tenant subdomain: ${host}`,
+      `No tenant in Host (${host}) and no ${TENANT_HEADER} header`,
     );
   }
   const ctx = cache.get(subdomain);
@@ -92,8 +108,10 @@ export function tenantResolverMiddleware(
   return (req: ReqLike, res: ResLike, next: NextLike): void => {
     const hostHeader = req.headers['host'];
     const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+    const tenantHeader = req.headers[TENANT_HEADER];
+    const fromHeader = Array.isArray(tenantHeader) ? tenantHeader[0] : tenantHeader;
     try {
-      const ctx = resolveTenant(cache, host, baseDomain);
+      const ctx = resolveTenant(cache, host, baseDomain, fromHeader);
       req.tenantContext = ctx;
       res.setHeader('X-Tenant-ID', ctx.tenant.id);
       res.setHeader('X-Tenant-DB', ctx.tenant.dbName);
