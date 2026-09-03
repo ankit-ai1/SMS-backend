@@ -6,7 +6,12 @@ import { AppError } from '../../http/errors';
 import { requireRole, requireAuth } from '../../http/rbac';
 import { pageMeta, parsePage } from '../../http/pagination';
 import { ctxOf } from '../corePeople/scope';
-import { requireFields } from '../corePeople/students';
+import { requireFields, guardDbConflict } from '../corePeople/students';
+import {
+  NOTIFICATION_AUDIENCES,
+  VISIBLE_TO_CALLER,
+  visibilityParams,
+} from './notifications';
 
 const ADMIN = ['super_admin', 'admin'] as const;
 const AUDIT_READ = ['super_admin', 'admin', 'principal'] as const;
@@ -15,43 +20,103 @@ const AUDIT_READ = ['super_admin', 'admin', 'principal'] as const;
 export function systemMiscRouter(pools: TenantPoolManager): Router {
   const r = Router();
 
-  // ---- Notifications (per-user) ----
+  // ---- Notifications ----
+  // A notification is stored once with its audience; who has read it lives in
+  // notification_reads, so one notice carries a read state per recipient.
+
+  // GET /notifications — the caller's inbox: unread first, then newest first.
   r.get('/notifications', requireAuth, asyncHandler(async (req, res) => {
     const ctx = ctxOf(req);
+    const params = await visibilityParams(pools, ctx, req.auth!);
     const onlyUnread = req.query.unread === 'true';
     const { rows } = await pools.query(ctx,
-      `SELECT id, title, body, type, is_read, created_at
-         FROM notifications
-        WHERE user_id = $1 ${onlyUnread ? 'AND is_read = FALSE' : ''}
-        ORDER BY created_at DESC LIMIT 100`, [req.auth!.userId]);
+      `SELECT n.id, n.title, n.body, n.audience, n.created_at, r.read_at, n.created_by
+         FROM notifications n
+         LEFT JOIN notification_reads r
+           ON r.notification_id = n.id AND r.user_id = $1
+        WHERE ${VISIBLE_TO_CALLER} ${onlyUnread ? 'AND r.read_at IS NULL' : ''}
+        ORDER BY (r.read_at IS NOT NULL), n.created_at DESC
+        LIMIT 100`, params);
     res.json(ok(rows));
   }));
 
-  // POST /notifications — admin/principal send to a user
-  r.post('/notifications', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
+  // POST /notifications — send to the whole school, a role, a section or one
+  // user. The legacy body ({ user_id, title }) still means audience 'user'.
+  r.post('/notifications', requireRole('super_admin', 'admin', 'principal'), asyncHandler(async (req, res) => {
+    const ctx = ctxOf(req);
     const b = req.body ?? {};
-    requireFields(b, ['user_id', 'title']);
-    const { rows } = await pools.query(ctxOf(req),
-      `INSERT INTO notifications (user_id, title, body, type) VALUES ($1,$2,$3,$4) RETURNING id`,
-      [b.user_id, b.title, b.body ?? null, b.type ?? null]);
-    res.status(201).json(ok({ id: rows[0].id }));
+    requireFields(b, ['title']);
+    const audience: string = b.audience ?? (b.user_id ? 'user' : '');
+    if (!NOTIFICATION_AUDIENCES.includes(audience as never)) {
+      throw AppError.validation([
+        { field: 'audience', message: `must be one of ${NOTIFICATION_AUDIENCES.join(', ')}` },
+      ]);
+    }
+    const target: Record<string, string | null> = {
+      user_id: null, audience_role: null, audience_section_id: null,
+    };
+    if (audience === 'user') {
+      requireFields(b, ['user_id']);
+      target.user_id = b.user_id;
+    } else if (audience === 'role') {
+      requireFields(b, ['audience_role']);
+      target.audience_role = b.audience_role;
+    } else if (audience === 'section') {
+      requireFields(b, ['audience_section_id']);
+      target.audience_section_id = b.audience_section_id;
+    }
+
+    const { rows } = await guardDbConflict(
+      () => pools.query(ctx,
+        `INSERT INTO notifications
+           (audience, user_id, audience_role, audience_section_id, title, body, type, created_by)
+         VALUES ($1,$2,$3::user_role_enum,$4,$5,$6,$7,$8)
+         RETURNING id, title, body, audience, created_at, created_by`,
+        [audience, target.user_id, target.audience_role, target.audience_section_id,
+          b.title, b.body ?? null, b.type ?? null, req.auth!.userId]),
+      'No user or section with that id',
+    );
+    res.status(201).json(ok({ ...rows[0], read_at: null }));
   }));
 
-  // PUT /notifications/:id/read — only your own
+  // PUT /notifications/:id/read — records that *this* caller read it.
   r.put('/notifications/:id/read', requireAuth, asyncHandler(async (req, res) => {
-    const { rowCount } = await pools.query(ctxOf(req),
-      `UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2`,
-      [req.params.id, req.auth!.userId]);
-    if (!rowCount) throw AppError.notFound('Notification');
-    res.json(ok({ is_read: true }));
+    const ctx = ctxOf(req);
+    const params = await visibilityParams(pools, ctx, req.auth!);
+    const { rows } = await pools.query<{ read_at: string }>(ctx,
+      `INSERT INTO notification_reads (notification_id, user_id)
+       SELECT n.id, $1 FROM notifications n
+        WHERE n.id = $4 AND ${VISIBLE_TO_CALLER}
+       ON CONFLICT (notification_id, user_id) DO UPDATE SET read_at = notification_reads.read_at
+       RETURNING read_at`,
+      [...params, req.params.id]);
+    // Not visible to this caller is indistinguishable from not existing, on
+    // purpose: neither should confirm another tenant's or user's notice.
+    if (!rows.length) throw AppError.notFound('Notification');
+    res.json(ok({ read_at: rows[0].read_at }));
   }));
 
-  // PUT /notifications/read-all
+  // PUT /notifications/read-all — everything currently in the caller's inbox.
   r.put('/notifications/read-all', requireAuth, asyncHandler(async (req, res) => {
-    const { rowCount } = await pools.query(ctxOf(req),
-      `UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE`, [req.auth!.userId]);
+    const ctx = ctxOf(req);
+    const params = await visibilityParams(pools, ctx, req.auth!);
+    const { rowCount } = await pools.query(ctx,
+      `INSERT INTO notification_reads (notification_id, user_id)
+       SELECT n.id, $1 FROM notifications n
+        WHERE ${VISIBLE_TO_CALLER}
+       ON CONFLICT DO NOTHING`, params);
     res.json(ok({ marked_read: rowCount ?? 0 }));
   }));
+
+  // DELETE /notifications/:id — withdraws the notice from everyone's inbox
+  // (reads cascade), so it is a sender action, not a per-user dismiss.
+  r.delete('/notifications/:id', requireRole('super_admin', 'admin', 'principal'),
+    asyncHandler(async (req, res) => {
+      const { rowCount } = await pools.query(ctxOf(req),
+        `DELETE FROM notifications WHERE id = $1`, [req.params.id]);
+      if (!rowCount) throw AppError.notFound('Notification');
+      res.json(ok({ deleted: true }));
+    }));
 
   // ---- Audit logs (read-only) ----
   r.get('/audit-logs', requireRole(...AUDIT_READ), asyncHandler(async (req, res) => {

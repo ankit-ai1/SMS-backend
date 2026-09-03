@@ -52,7 +52,7 @@ export function allocationsRouter(pools: TenantPoolManager): Router {
     const { rows } = await pools.query(ctx,
       `INSERT INTO student_fee_allocations (enrollment_id, fee_structure_id, discount_id, amount_due, due_date)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (enrollment_id, fee_structure_id) DO NOTHING
+       ON CONFLICT (enrollment_id, fee_structure_id) WHERE billing_month IS NULL DO NOTHING
        RETURNING id`,
       [b.enrollment_id, b.fee_structure_id, b.discount_id ?? null, amountDue, b.due_date ?? null]);
     if (!rows.length) throw new AppError('CONFLICT', 'Fee already allocated to this enrollment');
@@ -76,7 +76,7 @@ export function allocationsRouter(pools: TenantPoolManager): Router {
            JOIN fee_structures fs
              ON fs.class_id = sec.class_id AND fs.academic_year_id = e.academic_year_id
           WHERE e.academic_year_id = $1 AND e.status = 'active' ${classFilter}
-         ON CONFLICT (enrollment_id, fee_structure_id) DO NOTHING
+         ON CONFLICT (enrollment_id, fee_structure_id) WHERE billing_month IS NULL DO NOTHING
          RETURNING 1)
        SELECT COUNT(*)::int n FROM inserted`,
       [...params, b.due_date ?? null]);

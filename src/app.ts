@@ -13,6 +13,8 @@ import { academicOpsRouter, academicOpsInternalRouter } from './services/academi
 import { financeRouter } from './services/finance';
 import { systemRouter, systemInternalRouter } from './services/system';
 import { dashboardsRouter } from './services/gateway/dashboards';
+import { reportsRouter } from './services/reports';
+import { transportRouter } from './services/transport';
 
 export interface TenantAppDeps {
   cache: RegistryCache;
@@ -102,6 +104,8 @@ export function createTenantApp(deps: TenantAppDeps): Express {
   app.use('/api/v1', financeRouter(pools));
   app.use('/api/v1', systemRouter(pools));
   app.use('/api/v1', dashboardsRouter(pools));
+  app.use('/api/v1', reportsRouter(pools));
+  app.use('/api/v1', transportRouter(pools));
 
   app.use(notFoundMiddleware);
   app.use(errorMiddleware);

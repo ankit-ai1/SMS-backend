@@ -8,6 +8,7 @@ import { pageMeta, parsePage } from '../../http/pagination';
 import path from 'path';
 import { ctxOf, assertParentOwnsStudent } from './scope';
 import { hashPassword, isPasswordAcceptable } from '../../auth/passwords';
+import { config } from '../../config';
 import { TenantContext } from '../../registry/types';
 import { documentKey, documentStorage } from '../../storage/documentStorage';
 import { contentDisposition, requireUpload, singleFile } from '../../storage/uploads';
@@ -106,6 +107,55 @@ export function studentsRouter(pools: TenantPoolManager): Router {
         )
       ).rows;
       res.json(ok(rows, pageMeta(p.page, p.perPage, Number(total))));
+    }),
+  );
+
+  // GET /students/birthdays?month=MM&day=DD — whose birthday it is. Registered
+  // before /students/:id so "birthdays" is never read as a student id.
+  //
+  // No month/day means today, in the school's timezone rather than the
+  // container's: on Cloud Run that is UTC, which would roll the date over at
+  // 05:30 local and show tomorrow's birthdays all evening.
+  r.get(
+    '/students/birthdays',
+    requireRole('super_admin', 'admin', 'principal', 'teacher', 'clerk'),
+    asyncHandler(async (req, res) => {
+      const ctx = ctxOf(req);
+      const month = parseDatePart(req.query.month, 'month', 1, 12);
+      const day = parseDatePart(req.query.day, 'day', 1, 31);
+      if ((month === undefined) !== (day === undefined)) {
+        throw AppError.validation([
+          { field: month === undefined ? 'month' : 'day', message: 'month and day must be given together' },
+        ]);
+      }
+
+      const today = schoolToday();
+      const targetMonth = month ?? today.month;
+      const targetDay = day ?? today.day;
+      // A 29 February birthday would otherwise come round once every four
+      // years, so in a common year those students are greeted on the 28th.
+      const alsoFeb29 =
+        targetMonth === 2 && targetDay === 28 && !isLeapYear(today.year);
+
+      const { rows } = await pools.query(
+        ctx,
+        `SELECT s.id, s.first_name, s.last_name, s.admission_number, s.date_of_birth,
+                c.name AS class_name, sec.name AS section_name
+           FROM students s
+           LEFT JOIN student_enrollments e
+             ON e.student_id = s.id AND e.status = 'active'
+           LEFT JOIN academic_years y ON y.id = e.academic_year_id AND y.is_current
+           LEFT JOIN sections sec ON sec.id = e.section_id
+           LEFT JOIN classes c ON c.id = sec.class_id
+          WHERE s.deleted_at IS NULL AND s.is_active
+            AND ((EXTRACT(MONTH FROM s.date_of_birth), EXTRACT(DAY FROM s.date_of_birth)) = ($1, $2)
+                 OR ($3 AND EXTRACT(MONTH FROM s.date_of_birth) = 2
+                        AND EXTRACT(DAY FROM s.date_of_birth) = 29))
+          ORDER BY c.numeric_order NULLS LAST, sec.name NULLS LAST,
+                   s.last_name, s.first_name`,
+        [targetMonth, targetDay, alsoFeb29],
+      );
+      res.json(ok(rows));
     }),
   );
 
@@ -236,6 +286,58 @@ export function studentsRouter(pools: TenantPoolManager): Router {
     }),
   );
 
+  // GET /students/:id/siblings — other students who share a guardian.
+  //
+  // Guardians are stored per student (two brothers each have their own "father"
+  // row), so there is no shared guardian record to join on. A guardian is
+  // treated as the same person when the rows share a parent login, or a phone,
+  // or an email — the three identifiers a school actually re-uses across
+  // siblings. Name is deliberately not matched: too many namesakes.
+  r.get(
+    '/students/:id/siblings',
+    requireRole('super_admin', 'admin', 'accountant', 'clerk'),
+    asyncHandler(async (req, res) => {
+      const ctx = ctxOf(req);
+      await assertStudentExists(pools, ctx, req.params.id);
+      const { rows } = await pools.query(
+        ctx,
+        `WITH mine AS (
+           SELECT user_id,
+                  NULLIF(TRIM(phone), '')          AS phone,
+                  LOWER(NULLIF(TRIM(email), ''))   AS email
+             FROM student_guardians
+            WHERE student_id = $1
+         )
+         -- DISTINCT first (a sibling can match on several identifiers at once),
+         -- then order outside so numeric_order need not be in the output.
+         SELECT id, first_name, last_name, admission_number, class_name, section_name
+           FROM (
+             SELECT DISTINCT s.id, s.first_name, s.last_name, s.admission_number,
+                    c.name AS class_name, sec.name AS section_name, c.numeric_order
+               FROM student_guardians g
+               JOIN students s ON s.id = g.student_id
+               LEFT JOIN student_enrollments e
+                 ON e.student_id = s.id AND e.status = 'active'
+               LEFT JOIN academic_years y ON y.id = e.academic_year_id AND y.is_current
+               LEFT JOIN sections sec ON sec.id = e.section_id
+               LEFT JOIN classes c ON c.id = sec.class_id
+              WHERE g.student_id <> $1
+                AND s.deleted_at IS NULL AND s.is_active
+                AND EXISTS (
+                  SELECT 1 FROM mine m
+                   WHERE (m.user_id IS NOT NULL AND m.user_id = g.user_id)
+                      OR (m.phone   IS NOT NULL AND m.phone   = NULLIF(TRIM(g.phone), ''))
+                      OR (m.email   IS NOT NULL AND m.email   = LOWER(NULLIF(TRIM(g.email), '')))
+                )
+           ) sib
+          ORDER BY numeric_order NULLS LAST, section_name NULLS LAST,
+                   last_name, first_name`,
+        [req.params.id],
+      );
+      res.json(ok(rows));
+    }),
+  );
+
   // POST /students/:id/guardians
   r.post(
     '/students/:id/guardians',
@@ -300,7 +402,7 @@ export function studentsRouter(pools: TenantPoolManager): Router {
     asyncHandler(async (req, res) => {
       const b = req.body ?? {};
       requireFields(b, ['user_id']);
-      const { rowCount } = await guardFkConflict(
+      const { rowCount } = await guardDbConflict(
         () =>
           pools.query(
             ctxOf(req),
@@ -574,17 +676,63 @@ export function pickUpdatable(
 }
 
 /**
- * Run a delete (or any write) and translate a Postgres foreign-key violation
- * (SQLSTATE 23503 — the row is still referenced elsewhere, or points at a row
- * that does not exist) into a clean 409 instead of letting it surface as a 500.
+ * Run a write and turn the two "conflicts with data that already exists"
+ * Postgres errors into a clean 409 instead of a 500:
+ *   23503 — foreign key: the row is still referenced, or points at nothing
+ *   23505 — unique: something with that key is already there
+ * Callers pass the message that fits their case.
  */
-export async function guardFkConflict<T>(run: () => Promise<T>, msg?: string): Promise<T> {
+export async function guardDbConflict<T>(run: () => Promise<T>, msg?: string): Promise<T> {
   try {
     return await run();
   } catch (err) {
-    if ((err as { code?: string }).code === '23503') {
+    const code = (err as { code?: string }).code;
+    if (code === '23503' || code === '23505') {
       throw msg ? AppError.conflict(msg) : AppError.conflict();
     }
     throw err;
   }
+}
+
+/**
+ * Read an optional numeric query part (month/day). Absent stays absent;
+ * anything present must be a whole number inside the range.
+ */
+function parseDatePart(
+  raw: unknown,
+  field: string,
+  min: number,
+  max: number,
+): number | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  if (typeof raw !== 'string') {
+    throw AppError.validation([{ field, message: 'must be a single value' }]);
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw AppError.validation([{ field, message: `must be a whole number between ${min} and ${max}` }]);
+  }
+  return n;
+}
+
+/**
+ * Today as the school sees it. The container clock is UTC, which in India rolls
+ * the date over at 05:30 local — so "today" is read in config.schoolTimezone.
+ */
+export function schoolToday(now = new Date()): { year: number; month: number; day: number } {
+  // en-CA formats as YYYY-MM-DD, which parses without any locale guesswork.
+  const [year, month, day] = new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.schoolTimezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+    .format(now)
+    .split('-')
+    .map(Number);
+  return { year, month, day };
+}
+
+export function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 }

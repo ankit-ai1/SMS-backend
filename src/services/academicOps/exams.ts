@@ -5,7 +5,7 @@ import { ok } from '../../http/envelope';
 import { AppError } from '../../http/errors';
 import { requireRole } from '../../http/rbac';
 import { ctxOf, staffIdOf, teacherSectionIds, studentIdOf, assertOwnsEnrollment, parentStudentIds } from '../corePeople/scope';
-import { requireFields, pickUpdatable, guardFkConflict } from '../corePeople/students';
+import { requireFields, pickUpdatable, guardDbConflict } from '../corePeople/students';
 
 const READ_ALL = ['super_admin', 'admin', 'principal', 'teacher', 'parent'] as const;  // exams are out of scope for accountant and clerk
 const WRITE = ['super_admin', 'admin'] as const;  // principal is read-only
@@ -35,7 +35,7 @@ export function examsRouter(pools: TenantPoolManager): Router {
     res.json(ok({ updated: true }));
   }));
   r.delete('/exam-types/:id', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
-    const { rowCount } = await guardFkConflict(() => pools.query(ctxOf(req),
+    const { rowCount } = await guardDbConflict(() => pools.query(ctxOf(req),
       `DELETE FROM exam_types WHERE id = $1`, [req.params.id]));
     if (!rowCount) throw AppError.notFound('Exam type');
     res.json(ok({ deleted: true }));

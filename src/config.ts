@@ -74,6 +74,12 @@ export const config = {
    */
   documentsDir: str('DOCUMENTS_DIR', './var/documents'),
 
+  /**
+   * Timezone the school runs on. Used wherever 'today' has to mean the same
+   * day to a user as it does to the query — the container clock is UTC.
+   */
+  schoolTimezone: str('SCHOOL_TIMEZONE', 'Asia/Kolkata'),
+
   /** 'local' (disk, dev) or 'gcs' (bucket, Cloud Run — uses the runtime SA). */
   storageDriver: str('STORAGE_DRIVER', 'local'),
   gcsBucket: str('GCS_BUCKET', ''),

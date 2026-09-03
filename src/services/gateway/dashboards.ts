@@ -6,6 +6,7 @@ import { AppError } from '../../http/errors';
 import { requireRole } from '../../http/rbac';
 import { TenantContext } from '../../registry/types';
 import { ctxOf, staffIdOf, teacherSectionIds, parentStudentIds } from '../corePeople/scope';
+import { unreadNotificationCount } from '../system/notifications';
 
 /**
  * Base doc §5.1 — role-based dashboards. In Phase 1 (modular monolith) these
@@ -104,7 +105,14 @@ export function dashboardsRouter(pools: TenantPoolManager): Router {
   r.get('/dashboard/parent', requireRole('parent'), asyncHandler(async (req, res) => {
     const ctx = ctxOf(req);
     const childIds = await parentStudentIds(pools, ctx, req.auth!.userId);
-    if (childIds.length === 0) return res.json(ok({ children: [] }));
+    if (childIds.length === 0) {
+      // No children linked yet, but school-wide and role notices still reach
+      // them — so the badge belongs here too, not just on the branch below.
+      return res.json(ok({
+        children: [],
+        unread_notifications: await unreadNotificationCount(pools, ctx, req.auth!),
+      }));
+    }
 
     const children = await rowsOf(pools, ctx,
       `SELECT s.id, s.first_name, s.last_name,
@@ -119,8 +127,9 @@ export function dashboardsRouter(pools: TenantPoolManager): Router {
          LEFT JOIN sections sec ON sec.id=e.section_id
          LEFT JOIN classes c ON c.id=sec.class_id
         WHERE s.id = ANY($1)`, [childIds]);
-    const unread = await scalar(pools, ctx,
-      `SELECT COUNT(*)::int n FROM notifications WHERE user_id=$1 AND is_read=FALSE`, [req.auth!.userId]);
+    // Same visibility rules as GET /notifications, so the badge and the list
+    // can never disagree.
+    const unread = await unreadNotificationCount(pools, ctx, req.auth!);
     res.json(ok({ children, unread_notifications: unread }));
   }));
 
@@ -148,8 +157,7 @@ export function dashboardsRouter(pools: TenantPoolManager): Router {
         WHERE s.id=$1 AND s.deleted_at IS NULL
         ORDER BY y.is_current DESC NULLS LAST
         LIMIT 1`, [studentId]);
-    const unread = await scalar(pools, ctx,
-      `SELECT COUNT(*)::int n FROM notifications WHERE user_id=$1 AND is_read=FALSE`, [a.userId]);
+    const unread = await unreadNotificationCount(pools, ctx, a);
     res.json(ok({ student: rows[0] ?? null, unread_notifications: unread }));
   }));
 

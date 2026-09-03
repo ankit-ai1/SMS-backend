@@ -9,6 +9,7 @@ import { enrollmentsRouter } from './enrollments';
 import { attendanceRouter } from './attendance';
 import { staffRouter } from './staff';
 import { leavesRouter } from './leaves';
+import { gatePassesRouter } from './gatePasses';
 
 /**
  * /internal/* — service-to-service lookups (base doc §5.7). NOT exposed through
@@ -81,5 +82,6 @@ export function corePeopleRouter(pools: TenantPoolManager): Router {
   r.use(attendanceRouter(pools));
   r.use(staffRouter(pools));
   r.use(leavesRouter(pools));
+  r.use(gatePassesRouter(pools));
   return r;
 }

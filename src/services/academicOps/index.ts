@@ -8,6 +8,8 @@ import { structureRouter } from './structure';
 import { timetableRouter } from './timetable';
 import { examsRouter } from './exams';
 import { calendarRouter } from './calendar';
+import { seatingRouter } from './seating';
+import { onlineClassesRouter } from './onlineClasses';
 
 /** /internal/* for Academic Ops (base doc §5.7). */
 export function academicOpsInternalRouter(pools: TenantPoolManager): Router {
@@ -40,5 +42,7 @@ export function academicOpsRouter(pools: TenantPoolManager): Router {
   r.use(timetableRouter(pools));
   r.use(examsRouter(pools));
   r.use(calendarRouter(pools));
+  r.use(seatingRouter(pools));
+  r.use(onlineClassesRouter(pools));
   return r;
 }

@@ -5,7 +5,7 @@ import { ok } from '../../http/envelope';
 import { AppError } from '../../http/errors';
 import { requireRole } from '../../http/rbac';
 import { ctxOf, teacherSectionIds } from '../corePeople/scope';
-import { requireFields, pickUpdatable, guardFkConflict } from '../corePeople/students';
+import { requireFields, pickUpdatable, guardDbConflict } from '../corePeople/students';
 
 // The accountant is fees-only, but fee screens are built on years/classes/sections,
 // so those three reads keep them and the rest of the academic detail does not.
@@ -70,7 +70,7 @@ export function structureRouter(pools: TenantPoolManager): Router {
             OR EXISTS (SELECT 1 FROM student_enrollments WHERE academic_year_id = $1) AS in_use`,
       [id]);
     if (rows[0].in_use) throw AppError.conflict();
-    const { rowCount } = await guardFkConflict(() => pools.query(ctx,
+    const { rowCount } = await guardDbConflict(() => pools.query(ctx,
       `DELETE FROM academic_years WHERE id = $1`, [id]));
     if (!rowCount) throw AppError.notFound('Academic year');
     res.json(ok({ deleted: true }));
@@ -105,7 +105,7 @@ export function structureRouter(pools: TenantPoolManager): Router {
   }));
 
   r.delete('/academic-years/:yearId/terms/:termId', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
-    const { rowCount } = await guardFkConflict(() => pools.query(ctxOf(req),
+    const { rowCount } = await guardDbConflict(() => pools.query(ctxOf(req),
       `DELETE FROM terms WHERE id = $1 AND academic_year_id = $2`,
       [req.params.termId, req.params.yearId]));
     if (!rowCount) throw AppError.notFound('Term');
@@ -133,7 +133,7 @@ export function structureRouter(pools: TenantPoolManager): Router {
     res.json(ok({ updated: true }));
   }));
   r.delete('/departments/:id', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
-    const { rowCount } = await guardFkConflict(() => pools.query(ctxOf(req),
+    const { rowCount } = await guardDbConflict(() => pools.query(ctxOf(req),
       `DELETE FROM departments WHERE id = $1`, [req.params.id]));
     if (!rowCount) throw AppError.notFound('Department');
     res.json(ok({ deleted: true }));
@@ -160,7 +160,7 @@ export function structureRouter(pools: TenantPoolManager): Router {
     res.json(ok({ updated: true }));
   }));
   r.delete('/designations/:id', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
-    const { rowCount } = await guardFkConflict(() => pools.query(ctxOf(req),
+    const { rowCount } = await guardDbConflict(() => pools.query(ctxOf(req),
       `DELETE FROM designations WHERE id = $1`, [req.params.id]));
     if (!rowCount) throw AppError.notFound('Designation');
     res.json(ok({ deleted: true }));
@@ -188,7 +188,7 @@ export function structureRouter(pools: TenantPoolManager): Router {
     res.json(ok({ updated: true }));
   }));
   r.delete('/classes/:id', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
-    const { rowCount } = await guardFkConflict(() => pools.query(ctxOf(req),
+    const { rowCount } = await guardDbConflict(() => pools.query(ctxOf(req),
       `DELETE FROM classes WHERE id = $1`, [req.params.id]));
     if (!rowCount) throw AppError.notFound('Class');
     res.json(ok({ deleted: true }));
@@ -245,7 +245,7 @@ export function structureRouter(pools: TenantPoolManager): Router {
     res.json(ok({ updated: true }));
   }));
   r.delete('/sections/:id', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
-    const { rowCount } = await guardFkConflict(() => pools.query(ctxOf(req),
+    const { rowCount } = await guardDbConflict(() => pools.query(ctxOf(req),
       `DELETE FROM sections WHERE id = $1`, [req.params.id]));
     if (!rowCount) throw AppError.notFound('Section');
     res.json(ok({ deleted: true }));
@@ -272,7 +272,7 @@ export function structureRouter(pools: TenantPoolManager): Router {
     res.json(ok({ updated: true }));
   }));
   r.delete('/subjects/:id', requireRole('super_admin', 'admin'), asyncHandler(async (req, res) => {
-    const { rowCount } = await guardFkConflict(() => pools.query(ctxOf(req),
+    const { rowCount } = await guardDbConflict(() => pools.query(ctxOf(req),
       `DELETE FROM subjects WHERE id = $1`, [req.params.id]));
     if (!rowCount) throw AppError.notFound('Subject');
     res.json(ok({ deleted: true }));
