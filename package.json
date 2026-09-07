@@ -5,10 +5,10 @@
   "main": "dist/server.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "node api.js && tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsc && node test/smoke.mjs",
-    "start": "node dist/server.js",
+    "start": "node api.js && node dist/server.js",
     "migrate": "node dist/scripts/migrate.js",
     "provision-tenant": "node dist/scripts/provisionTenant.js"
   },
